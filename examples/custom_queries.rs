@@ -1,5 +1,5 @@
 // Example: Custom GOQL queries
-use geodesk_rs::{GeoDesk, BoundingBox};
+use geodesk_rs::{BoundingBox, GeoDesk};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Open the GOL file
@@ -60,6 +60,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let crossings = geodesk.query("n[highway=crossing]", bbox)?;
     println!("   Found {} crossings", crossings.count());
 
+    // 10. Query crossings
+    println!("\n10. Road Network:");
+    let start = std::time::Instant::now();
+    let road_network = geodesk.query("nwa[highway]", bbox)?;
+    let duration = start.elapsed();
+    println!("   Found {} road network elements", road_network.count());
+    println!("   Query took: {:?}", duration);
+
     // Show details of first hospital found
     let hospital_features = hospitals.to_vec()?;
     if let Some(hospital) = hospital_features.first() {
@@ -74,4 +82,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
