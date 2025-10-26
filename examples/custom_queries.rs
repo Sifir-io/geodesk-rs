@@ -68,6 +68,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Found {} road network elements", road_network.count());
     println!("   Query took: {:?}", duration);
 
+    let road_features = road_network.to_vec()?;
+    println!("   First 4 ways:");
+    for (i, feature) in road_features.iter().take(4).enumerate() {
+        println!(
+            "     {}: {} ({:.4}°, {:.4}°) - {} nodes",
+            i + 1,
+            feature.name,
+            feature.lon,
+            feature.lat,
+            feature.nodes.len()
+        );
+    }
+
     // Show details of first hospital found
     let hospital_features = hospitals.to_vec()?;
     if let Some(hospital) = hospital_features.first() {

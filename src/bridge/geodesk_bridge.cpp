@@ -64,6 +64,19 @@ FeatureStore::query(const std::string &goql_query,
         data.tag_values.push_back(std::string(tag.value()));
       }
 
+      // If this is a way, collect its nodes (geometry) immediately
+      // This avoids the need for a separate query later
+      if (feature.isWay()) {
+        Nodes nodes = feature.nodes();
+        for (Node node : nodes) {
+          NodeData node_data;
+          node_data.id = node.id();
+          node_data.lon = node.lon();
+          node_data.lat = node.lat();
+          data.nodes.push_back(node_data);
+        }
+      }
+
       result->add_feature(std::move(data));
     }
   } catch (const std::exception &e) {

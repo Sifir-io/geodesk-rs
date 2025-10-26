@@ -12,8 +12,9 @@ namespace geodesk_bridge {
 class FeatureStore;
 class FeatureResult;
 
-// Note: FeatureData is defined by cxx.rs in the generated bridge code
+// Note: FeatureData and NodeData are defined by cxx.rs in the generated bridge code
 struct FeatureData;
+struct NodeData;
 
 // Structure to represent a bounding box
 struct BoundingBox {

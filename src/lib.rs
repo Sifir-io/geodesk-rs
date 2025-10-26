@@ -1,10 +1,16 @@
 // Rust library for GeoDESK C++ bindings using cxx.rs
 
 pub mod ffi {
-    use cxx::UniquePtr;
-
     #[cxx::bridge(namespace = "geodesk_bridge")]
     pub mod bridge {
+        // Node data for way geometry
+        #[derive(Debug, Clone, Copy)]
+        pub struct NodeData {
+            pub id: i64,
+            pub lon: f64,
+            pub lat: f64,
+        }
+
         // Shared structs between Rust and C++
         #[derive(Debug, Clone)]
         pub struct FeatureData {
@@ -15,6 +21,7 @@ pub mod ffi {
             pub lat: f64,
             pub tag_keys: Vec<String>,
             pub tag_values: Vec<String>,
+            pub nodes: Vec<NodeData>,  // Way nodes (empty for non-ways)
         }
 
         // Opaque C++ types
@@ -86,6 +93,24 @@ impl BoundingBox {
     }
 }
 
+/// A node in a way's geometry
+#[derive(Debug, Clone, Copy)]
+pub struct Node {
+    pub id: i64,
+    pub lon: f64,
+    pub lat: f64,
+}
+
+impl From<ffi::bridge::NodeData> for Node {
+    fn from(data: ffi::bridge::NodeData) -> Self {
+        Node {
+            id: data.id,
+            lon: data.lon,
+            lat: data.lat,
+        }
+    }
+}
+
 /// A feature from OpenStreetMap data
 #[derive(Debug, Clone)]
 pub struct Feature {
@@ -95,6 +120,7 @@ pub struct Feature {
     pub lon: f64,
     pub lat: f64,
     pub tags: Vec<(String, String)>,
+    pub nodes: Vec<Node>,  // Way nodes (empty for non-ways)
 }
 
 impl From<ffi::bridge::FeatureData> for Feature {
@@ -105,6 +131,9 @@ impl From<ffi::bridge::FeatureData> for Feature {
             .zip(data.tag_values.into_iter())
             .collect();
 
+        // Convert NodeData to Node
+        let nodes: Vec<Node> = data.nodes.into_iter().map(|n| n.into()).collect();
+
         Feature {
             id: data.id,
             type_name: data.type_name,
@@ -112,6 +141,7 @@ impl From<ffi::bridge::FeatureData> for Feature {
             lon: data.lon,
             lat: data.lat,
             tags,
+            nodes,
         }
     }
 }
@@ -128,6 +158,21 @@ impl Feature {
     /// Check if a tag exists
     pub fn has_tag(&self, key: &str) -> bool {
         self.tags.iter().any(|(k, _)| k == key)
+    }
+
+    /// Check if this feature is a way
+    pub fn is_way(&self) -> bool {
+        self.type_name == "way"
+    }
+
+    /// Check if this feature is a node
+    pub fn is_node(&self) -> bool {
+        self.type_name == "node"
+    }
+
+    /// Check if this feature is a relation
+    pub fn is_relation(&self) -> bool {
+        self.type_name == "relation"
     }
 }
 
@@ -259,10 +304,7 @@ impl GeoDesk {
     }
 
     /// Query bars and pubs within a bounding box
-    pub fn query_bars(
-        &self,
-        bbox: BoundingBox,
-    ) -> Result<QueryResult, Box<dyn std::error::Error>> {
+    pub fn query_bars(&self, bbox: BoundingBox) -> Result<QueryResult, Box<dyn std::error::Error>> {
         self.query("na[amenity=bar,pub]", bbox)
     }
 
