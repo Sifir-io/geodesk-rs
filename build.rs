@@ -48,6 +48,7 @@ fn main() {
         .file(bridge_dir.join("geodesk_bridge.cpp"))
         .flag_if_supported("-std=c++20")
         .flag_if_supported("/std:c++20") // MSVC
+        .flag_if_supported("-Winvalid-offsetof") // MSVC
         .include(&bridge_dir);
 
     // Add GeoDESK include path if it exists

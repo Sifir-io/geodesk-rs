@@ -3,6 +3,7 @@
 pub mod ffi {
     #[cxx::bridge(namespace = "geodesk_bridge")]
     pub mod bridge {
+
         // Node data for way geometry
         #[derive(Debug, Clone, Copy)]
         pub struct NodeData {
