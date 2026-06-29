@@ -12,6 +12,22 @@ pub mod ffi {
             pub lat: f64,
         }
 
+        // A single coordinate of a polygon ring (no node identity).
+        #[derive(Debug, Clone, Copy)]
+        pub struct CoordData {
+            pub lon: f64,
+            pub lat: f64,
+        }
+
+        // A polygon ring of an area feature. Outer rings describe the filled
+        // area; inner rings (is_outer = false) are holes. Coordinates are
+        // closed (the first vertex is repeated as the last).
+        #[derive(Debug, Clone)]
+        pub struct RingData {
+            pub is_outer: bool,
+            pub coords: Vec<CoordData>,
+        }
+
         // Shared structs between Rust and C++
         #[derive(Debug, Clone)]
         pub struct FeatureData {
@@ -23,6 +39,8 @@ pub mod ffi {
             pub tag_keys: Vec<String>,
             pub tag_values: Vec<String>,
             pub nodes: Vec<NodeData>,  // Way nodes (empty for non-ways)
+            pub is_area: bool,         // true for area ways and area relations
+            pub rings: Vec<RingData>,  // Polygon rings (empty for non-areas)
         }
 
         // Opaque C++ types
@@ -112,6 +130,43 @@ impl From<ffi::bridge::NodeData> for Node {
     }
 }
 
+/// A single coordinate of a polygon ring (longitude/latitude, WGS-84).
+#[derive(Debug, Clone, Copy)]
+pub struct Coord {
+    pub lon: f64,
+    pub lat: f64,
+}
+
+impl From<ffi::bridge::CoordData> for Coord {
+    fn from(data: ffi::bridge::CoordData) -> Self {
+        Coord {
+            lon: data.lon,
+            lat: data.lat,
+        }
+    }
+}
+
+/// A polygon ring of an area feature.
+///
+/// Outer rings (`is_outer == true`) describe the filled area; inner rings are
+/// holes. Coordinates are closed: the first vertex is repeated as the last.
+/// For an area mapped as a closed way there is a single outer ring; for a
+/// multipolygon relation the member ways are stitched into one or more rings.
+#[derive(Debug, Clone)]
+pub struct Ring {
+    pub is_outer: bool,
+    pub coords: Vec<Coord>,
+}
+
+impl From<ffi::bridge::RingData> for Ring {
+    fn from(data: ffi::bridge::RingData) -> Self {
+        Ring {
+            is_outer: data.is_outer,
+            coords: data.coords.into_iter().map(|c| c.into()).collect(),
+        }
+    }
+}
+
 /// A feature from OpenStreetMap data
 #[derive(Debug, Clone)]
 pub struct Feature {
@@ -122,6 +177,8 @@ pub struct Feature {
     pub lat: f64,
     pub tags: Vec<(String, String)>,
     pub nodes: Vec<Node>,  // Way nodes (empty for non-ways)
+    pub is_area: bool,     // true for area ways and area relations
+    pub rings: Vec<Ring>,  // Polygon rings (empty for non-areas)
 }
 
 impl From<ffi::bridge::FeatureData> for Feature {
@@ -135,6 +192,9 @@ impl From<ffi::bridge::FeatureData> for Feature {
         // Convert NodeData to Node
         let nodes: Vec<Node> = data.nodes.into_iter().map(|n| n.into()).collect();
 
+        // Convert polygon rings (areas only)
+        let rings: Vec<Ring> = data.rings.into_iter().map(|r| r.into()).collect();
+
         Feature {
             id: data.id,
             type_name: data.type_name,
@@ -143,6 +203,8 @@ impl From<ffi::bridge::FeatureData> for Feature {
             lat: data.lat,
             tags,
             nodes,
+            is_area: data.is_area,
+            rings,
         }
     }
 }
@@ -174,6 +236,23 @@ impl Feature {
     /// Check if this feature is a relation
     pub fn is_relation(&self) -> bool {
         self.type_name == "relation"
+    }
+
+    /// Check if this feature is an area (a closed-way area or an area relation
+    /// such as a multipolygon / administrative boundary). Area features carry
+    /// polygon geometry in [`Feature::rings`].
+    pub fn is_area(&self) -> bool {
+        self.is_area
+    }
+
+    /// The outer rings of this area feature (excludes holes).
+    pub fn outer_rings(&self) -> impl Iterator<Item = &Ring> {
+        self.rings.iter().filter(|r| r.is_outer)
+    }
+
+    /// The inner rings (holes) of this area feature.
+    pub fn inner_rings(&self) -> impl Iterator<Item = &Ring> {
+        self.rings.iter().filter(|r| !r.is_outer)
     }
 }
 

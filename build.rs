@@ -63,6 +63,15 @@ fn main() {
         }
     }
 
+    // The Polygonizer's RingCoordinateIterator lives in GeoDESK's private
+    // `src/` tree (not the public `include/`). Add it so the bridge can stitch
+    // multipolygon relation boundaries into rings.
+    let geodesk_src = cmake_build_dir.join("_deps/geodesk-src/src");
+    if geodesk_src.exists() {
+        build.include(&geodesk_src);
+        println!("cargo:warning=Using GeoDESK private headers from: {}", geodesk_src.display());
+    }
+
     build.compile("geodesk_bridge_cxx");
 
     // On Linux, link to standard C++ library and other dependencies

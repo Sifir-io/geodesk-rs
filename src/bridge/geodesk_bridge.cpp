@@ -1,12 +1,68 @@
 #include "geodesk_bridge.h"
 #include "geodesk-rs/src/lib.rs.h" // Include generated cxx.rs header for FeatureData definition
 #include <geodesk/geodesk.h>
+#include <geodesk/feature/RelationPtr.h>
+#include <geodesk/geom/Coordinate.h>
+#include <geodesk/geom/polygon/Polygonizer.h>
+#include "geom/polygon/RingCoordinateIterator.h" // internal header (src/ on include path)
 #include <sstream>
 #include <stdexcept>
 
 using namespace geodesk;
 
 namespace geodesk_bridge {
+
+// Read every coordinate of a Polygonizer ring into a RingData. The iterator
+// yields the ring's vertices in order, with the closing vertex repeated.
+static RingData ring_to_data(const Polygonizer::Ring *ring, bool is_outer) {
+  RingData out;
+  out.is_outer = is_outer;
+  RingCoordinateIterator iter(ring);
+  int remaining = iter.coordinatesRemaining();
+  for (int i = 0; i < remaining; i++) {
+    Coordinate c = iter.next();
+    CoordData coord;
+    coord.lon = c.lon();
+    coord.lat = c.lat();
+    out.coords.push_back(coord);
+  }
+  return out;
+}
+
+// Populate FeatureData.rings with the polygon geometry of an area feature.
+// Closed-way areas yield a single outer ring; area relations (multipolygons,
+// administrative boundaries) are stitched from their member ways.
+static void collect_rings(const Feature &feature, FeatureData &data) {
+  if (!feature.isArea()) {
+    return;
+  }
+
+  if (feature.isWay()) {
+    // A closed-way area is a single outer ring made of the way's nodes.
+    RingData ring;
+    ring.is_outer = true;
+    Nodes nodes = feature.nodes();
+    for (Node node : nodes) {
+      CoordData coord;
+      coord.lon = node.lon();
+      coord.lat = node.lat();
+      ring.coords.push_back(coord);
+    }
+    data.rings.push_back(std::move(ring));
+  } else if (feature.isRelation()) {
+    // Stitch member ways into outer/inner rings.
+    Polygonizer polygonizer;
+    polygonizer.createRings(feature.store(), RelationPtr(feature.ptr()));
+    for (const Polygonizer::Ring *r = polygonizer.outerRings(); r;
+         r = r->next()) {
+      data.rings.push_back(ring_to_data(r, true));
+    }
+    for (const Polygonizer::Ring *r = polygonizer.innerRings(); r;
+         r = r->next()) {
+      data.rings.push_back(ring_to_data(r, false));
+    }
+  }
+}
 
 // FeatureStore implementation
 class FeatureStore::Impl {
@@ -76,6 +132,12 @@ FeatureStore::query(const std::string &goql_query,
           data.nodes.push_back(node_data);
         }
       }
+
+      // For area features (closed ways and area relations) collect the
+      // polygon rings so callers can recover boundaries (e.g. neighbourhoods,
+      // administrative areas).
+      data.is_area = feature.isArea();
+      collect_rings(feature, data);
 
       result->add_feature(std::move(data));
     }

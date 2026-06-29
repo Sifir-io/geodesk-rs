@@ -244,10 +244,46 @@ Represents an OSM feature.
 - `id` - OSM ID
 - `type_name` - Feature type ("node", "way", "relation")
 - `name` - Name tag value
-- `lon`, `lat` - Coordinates
+- `lon`, `lat` - Coordinates (for ways/relations, the bbox midpoint)
 - `tags` - All tags as key-value pairs
 - `tag(key)` - Get tag value
 - `has_tag(key)` - Check if tag exists
+- `nodes` - Way geometry as ordered `Node`s (empty for non-ways)
+- `is_area` / `is_area()` - `true` for area ways and area relations
+- `rings` - Polygon rings (empty for non-areas)
+- `outer_rings()` / `inner_rings()` - Iterators over the filled rings / holes
+
+### Area boundaries (`Ring` / `Coord`)
+
+Area features carry their polygon geometry in `rings`. This covers
+neighbourhoods, suburbs and administrative boundaries — whether mapped as a
+**closed way** (single outer ring) or as a **multipolygon relation** (member
+ways are stitched into outer/inner rings via GeoDESK's `Polygonizer`).
+
+```rust
+use geodesk_rs::{GeoDesk, BoundingBox};
+
+let geodesk = GeoDesk::open("world.gol")?;
+let bbox = BoundingBox::new(-6.32, 53.32, -6.20, 53.38); // central Dublin
+
+// Neighbourhoods, with their boundaries
+let hoods = geodesk.query("na[place=neighbourhood,suburb,quarter]", bbox)?;
+for f in hoods.to_vec()? {
+    if f.is_area() {
+        for ring in f.outer_rings() {
+            // ring.coords is a closed loop of { lon, lat } (first == last)
+            println!("{} boundary: {} vertices", f.name, ring.coords.len());
+        }
+    } else {
+        // Mapped as a point label — only a centroid is available
+        println!("{} at ({:.4}, {:.4})", f.name, f.lon, f.lat);
+    }
+}
+```
+
+- `Ring` - `{ is_outer: bool, coords: Vec<Coord> }`; outer rings are the filled
+  area, inner rings are holes. Coordinates are closed (first vertex repeated).
+- `Coord` - `{ lon: f64, lat: f64 }` in WGS-84 degrees.
 
 ## Building from Source
 
