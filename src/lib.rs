@@ -41,6 +41,12 @@ pub mod ffi {
             pub nodes: Vec<NodeData>,  // Way nodes (empty for non-ways)
             pub is_area: bool,         // true for area ways and area relations
             pub rings: Vec<RingData>,  // Polygon rings (empty for non-areas)
+            // Feature bounding box (WGS-84). For a node this is the point
+            // itself (min == max); for ways/relations it is the full extent.
+            pub min_lon: f64,
+            pub min_lat: f64,
+            pub max_lon: f64,
+            pub max_lat: f64,
         }
 
         // Opaque C++ types
@@ -179,6 +185,10 @@ pub struct Feature {
     pub nodes: Vec<Node>,  // Way nodes (empty for non-ways)
     pub is_area: bool,     // true for area ways and area relations
     pub rings: Vec<Ring>,  // Polygon rings (empty for non-areas)
+    /// Feature bounding box (WGS-84). For a node, a degenerate box at the
+    /// point; for a way/relation, the full geographic extent — i.e. a city's
+    /// extent when this feature is its administrative boundary.
+    pub bounds: BoundingBox,
 }
 
 impl From<ffi::bridge::FeatureData> for Feature {
@@ -205,6 +215,12 @@ impl From<ffi::bridge::FeatureData> for Feature {
             nodes,
             is_area: data.is_area,
             rings,
+            bounds: BoundingBox {
+                west: data.min_lon,
+                south: data.min_lat,
+                east: data.max_lon,
+                north: data.max_lat,
+            },
         }
     }
 }

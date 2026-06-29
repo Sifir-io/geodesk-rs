@@ -3,6 +3,8 @@
 #include <geodesk/geodesk.h>
 #include <geodesk/feature/RelationPtr.h>
 #include <geodesk/geom/Coordinate.h>
+#include <geodesk/geom/Box.h>
+#include <geodesk/geom/Mercator.h>
 #include <geodesk/geom/polygon/Polygonizer.h>
 #include "geom/polygon/RingCoordinateIterator.h" // internal header (src/ on include path)
 #include <sstream>
@@ -138,6 +140,14 @@ FeatureStore::query(const std::string &goql_query,
       // administrative areas).
       data.is_area = feature.isArea();
       collect_rings(feature, data);
+
+      // Feature bounding box (cheap — no geometry materialization). For a node
+      // this is the point; for a boundary relation it is the area's extent.
+      Box bounds = feature.bounds();
+      data.min_lon = Mercator::lonFromX(bounds.minX());
+      data.min_lat = Mercator::latFromY(bounds.minY());
+      data.max_lon = Mercator::lonFromX(bounds.maxX());
+      data.max_lat = Mercator::latFromY(bounds.maxY());
 
       result->add_feature(std::move(data));
     }

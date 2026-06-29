@@ -252,6 +252,10 @@ Represents an OSM feature.
 - `is_area` / `is_area()` - `true` for area ways and area relations
 - `rings` - Polygon rings (empty for non-areas)
 - `outer_rings()` / `inner_rings()` - Iterators over the filled rings / holes
+- `bounds` - The feature's bounding box (`BoundingBox`, WGS-84). A degenerate
+  box at the point for a node; the full extent for a way/relation — e.g. a
+  city's extent when the feature is its administrative boundary. Computed from
+  GeoDESK's native feature bbox (no geometry materialization).
 
 ### Area boundaries (`Ring` / `Coord`)
 
