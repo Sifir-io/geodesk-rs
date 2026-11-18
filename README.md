@@ -221,6 +221,32 @@ Main interface to GOL files.
 - `query_bus_stops(bbox)` - Query bus stops
 - `query_roads(bbox)` - Query roads
 - `query_all_amenities(bbox)` - Query all amenities
+- `query_ways_compact(goql, bbox, keys)` - Ways as flat arrays (see
+  `CompactWays` below)
+
+`GeoDesk` is `Send + Sync`: GeoDESK is built with `GEODESK_MULTITHREADED`, so
+one opened GOL can serve concurrent queries from several threads (e.g. a bbox
+read as sub-boxes in parallel) instead of each thread opening its own store
+and thread pool.
+
+### `CompactWays`
+
+Result of `query_ways_compact`: for each matching way, its id, node
+coordinates, and the values of the requested tag keys only. Filled once on the
+C++ side with no per-feature allocation; read it in place through `view()`:
+
+```rust
+let ways = geodesk.query_ways_compact("w[highway]", bbox, &["highway", "oneway"])?;
+let v = ways.view();
+for w in 0..v.len() {
+    let (id, lons, lats) = (v.way_id(w), v.lons(w), v.lats(w));
+    let oneway: Option<&str> = v.tag(w, 1); // same as Feature::tag("oneway")
+}
+```
+
+`tag(w, k)` returns `Some` whenever the way has key `k` (also for values such
+as `"no"` or `0`), exactly like `Feature::tag`. Ways come in GeoDESK's tile
+completion order, which varies between runs; sort them if order matters.
 
 ### `BoundingBox`
 

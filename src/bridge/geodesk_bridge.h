@@ -24,6 +24,8 @@ struct BoundingBox {
   double north;
 };
 
+class CompactWays;
+
 // Main wrapper class for Features collection
 class FeatureStore {
 public:
@@ -39,9 +41,47 @@ public:
   std::unique_ptr<FeatureResult> query(const std::string &goql_query,
                                        const BoundingBox &bbox) const;
 
+  // Ways matching a GOQL query, as flat arrays: way ids, node coordinates
+  // and the values of the requested tag keys only (see CompactWays).
+  std::unique_ptr<CompactWays>
+  query_ways_compact(const std::string &goql_query, const BoundingBox &bbox,
+                     const std::vector<std::string> &keys) const;
+
 private:
   class Impl;
   std::unique_ptr<Impl> pImpl;
+};
+
+// Result of FeatureStore::query_ways_compact. Immutable once built; holds
+// plain copies (no pointers into the store), so it outlives the store and can
+// move between threads.
+//
+// Layout, for way w (0-based) and requested key k (0-based, K keys):
+//   way_ids[w]
+//   node coordinates: lons/lats[node_ends[w-1] .. node_ends[w]]
+//                     (node_ends[-1] = 0)
+//   tag value bytes:  tag_bytes[tag_ends[i-1] .. tag_ends[i]], i = w*K + k
+//                     (tag_ends[-1] = 0)
+//   tag_present[i]:   1 if the way has a tag with key k (first occurrence
+//                     wins), else 0. Presence is decided by the key, not by
+//                     the value's truthiness.
+class CompactWays {
+public:
+  rust::Slice<const int64_t> way_ids() const;
+  rust::Slice<const uint32_t> node_ends() const;
+  rust::Slice<const double> lons() const;
+  rust::Slice<const double> lats() const;
+  rust::Slice<const uint8_t> tag_bytes() const;
+  rust::Slice<const uint32_t> tag_ends() const;
+  rust::Slice<const uint8_t> tag_present() const;
+
+  std::vector<int64_t> way_ids_;
+  std::vector<uint32_t> node_ends_;
+  std::vector<double> lons_;
+  std::vector<double> lats_;
+  std::vector<uint8_t> tag_bytes_;
+  std::vector<uint32_t> tag_ends_;
+  std::vector<uint8_t> tag_present_;
 };
 
 // Result set wrapper
@@ -72,6 +112,11 @@ std::unique_ptr<FeatureResult> query_with_goql(const FeatureStore &store,
                                                rust::Str goql_query,
                                                double west, double south,
                                                double east, double north);
+
+std::unique_ptr<CompactWays>
+query_ways_compact(const FeatureStore &store, rust::Str goql_query,
+                   double west, double south, double east, double north,
+                   rust::Slice<const rust::Str> keys);
 
 size_t result_count(const FeatureResult &result);
 

@@ -27,6 +27,12 @@ FetchContent_Declare(geodesk
 # Build GeoDESK as a static library
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build as static library" FORCE)
 
+# Atomic reference counts on the store and matchers, so one opened GOL can be
+# queried from several threads at once ("Allow multiple threads to use the
+# same GOL", see libgeodesk's Features docs). The Rust side relies on it for
+# `GeoDesk: Send + Sync`; build.rs passes the same define to the bridge.
+set(GEODESK_MULTITHREADED ON CACHE BOOL "Multi-threaded GOL access" FORCE)
+
 # Fetch the content first
 FetchContent_GetProperties(geodesk)
 if(NOT geodesk_POPULATED)

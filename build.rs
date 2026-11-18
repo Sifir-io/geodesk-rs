@@ -49,6 +49,9 @@ fn main() {
         .flag_if_supported("-std=c++20")
         .flag_if_supported("/std:c++20") // MSVC
         .flag_if_supported("-Winvalid-offsetof") // MSVC
+        // Must match the library build (CMakeLists.txt): the define changes
+        // libgeodesk's inline refcounting code in the headers.
+        .define("GEODESK_MULTITHREADED", None)
         .include(&bridge_dir);
 
     // Add GeoDESK include path if it exists
