@@ -49,6 +49,7 @@ pub mod ffi {
 
             type FeatureStore;
             type FeatureResult;
+            type CompactWays;
 
             // Factory functions
             fn create_feature_store(gol_path: &str) -> Result<UniquePtr<FeatureStore>>;
@@ -71,12 +72,58 @@ pub mod ffi {
                 north: f64,
             ) -> Result<UniquePtr<FeatureResult>>;
 
+            fn query_ways_compact(
+                store: &FeatureStore,
+                goql_query: &str,
+                west: f64,
+                south: f64,
+                east: f64,
+                north: f64,
+                keys: &[&str],
+            ) -> Result<UniquePtr<CompactWays>>;
+
+            fn way_ids(self: &CompactWays) -> &[i64];
+            fn node_ends(self: &CompactWays) -> &[u32];
+            fn lons(self: &CompactWays) -> &[f64];
+            fn lats(self: &CompactWays) -> &[f64];
+            fn tag_bytes(self: &CompactWays) -> &[u8];
+            fn tag_ends(self: &CompactWays) -> &[u32];
+            fn tag_present(self: &CompactWays) -> &[u8];
+
             fn result_count(result: &FeatureResult) -> usize;
 
             fn result_to_vec(result: &FeatureResult) -> Result<UniquePtr<CxxVector<FeatureData>>>;
         }
     }
 }
+
+// SAFETY (FeatureStore: Send + Sync): the C++ `FeatureStore` wraps one
+// libgeodesk `Features` collection and is only used through `const` member
+// functions (`query`, `query_amenities`, `query_ways_compact`) after
+// construction. libgeodesk supports concurrent queries on one GOL when built
+// with GEODESK_MULTITHREADED, which CMakeLists.txt and build.rs both set (the
+// bridge refuses to compile without it):
+//   - the store's and matchers' reference counts are atomic;
+//   - the GOL is memory-mapped read-only and tile pages are located by pure
+//     arithmetic (`FreeStore::pagePointer`);
+//   - matcher compilation (`MatcherCompiler::getMatcher`) and the string
+//     table lookups it does keep no mutable state;
+//   - the store's query thread pool is mutex-guarded, and a query only posts
+//     with `tryPost` (running a tile inline when the queue is full), so
+//     concurrent consumers cannot deadlock each other;
+//   - each query's result queue is owned by that query.
+// Dropping the store on another thread is fine: its destructor joins the
+// pool's threads and takes the open-stores mutex, neither of which is tied to
+// the creating thread. Nothing handed to Rust (`FeatureResult`,
+// `CompactWays`) points into the store.
+unsafe impl Send for ffi::bridge::FeatureStore {}
+unsafe impl Sync for ffi::bridge::FeatureStore {}
+
+// SAFETY (CompactWays: Send + Sync): a bag of `std::vector`s of plain
+// numbers, filled before it is returned and never mutated afterwards; it
+// holds no references into the store.
+unsafe impl Send for ffi::bridge::CompactWays {}
+unsafe impl Sync for ffi::bridge::CompactWays {}
 
 use cxx::UniquePtr;
 use std::path::Path;
@@ -284,7 +331,140 @@ impl QueryResult {
     }
 }
 
+/// Ways from [`GeoDesk::query_ways_compact`], in flat arrays: way ids, node
+/// coordinates, and only the tag keys that were asked for.
+///
+/// Compared to `query` + `to_vec`, nothing is allocated per feature and the
+/// data is not copied again after the query: the arrays are filled once on
+/// the C++ side and read in place through [`CompactWays::view`].
+///
+/// Ways are in the order the query yields them, which follows libgeodesk's
+/// tile completion order and is **not** stable from run to run. Sort (e.g. by
+/// way id) if order matters.
+pub struct CompactWays {
+    inner: UniquePtr<ffi::bridge::CompactWays>,
+    key_count: usize,
+}
+
+impl CompactWays {
+    /// Borrow the arrays. Cheap (a handful of FFI calls); hold on to the
+    /// view rather than calling this per way.
+    pub fn view(&self) -> CompactWaysView<'_> {
+        let w = &*self.inner;
+        CompactWaysView {
+            way_ids: w.way_ids(),
+            node_ends: w.node_ends(),
+            lons: w.lons(),
+            lats: w.lats(),
+            tag_bytes: w.tag_bytes(),
+            tag_ends: w.tag_ends(),
+            tag_present: w.tag_present(),
+            key_count: self.key_count,
+        }
+    }
+
+    /// Number of ways.
+    pub fn len(&self) -> usize {
+        self.inner.way_ids().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Bytes held by the arrays (lengths, not capacities).
+    pub fn byte_len(&self) -> usize {
+        let v = self.view();
+        v.way_ids.len() * 8
+            + v.node_ends.len() * 4
+            + (v.lons.len() + v.lats.len()) * 8
+            + v.tag_bytes.len()
+            + v.tag_ends.len() * 4
+            + v.tag_present.len()
+    }
+}
+
+/// Borrowed view of a [`CompactWays`] result. Way indices run `0..len()`;
+/// key indices follow the `keys` slice passed to the query.
+#[derive(Clone, Copy)]
+pub struct CompactWaysView<'a> {
+    way_ids: &'a [i64],
+    node_ends: &'a [u32],
+    lons: &'a [f64],
+    lats: &'a [f64],
+    tag_bytes: &'a [u8],
+    tag_ends: &'a [u32],
+    tag_present: &'a [u8],
+    key_count: usize,
+}
+
+impl<'a> CompactWaysView<'a> {
+    /// Number of ways.
+    pub fn len(&self) -> usize {
+        self.way_ids.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.way_ids.is_empty()
+    }
+
+    /// All way ids, in result order.
+    pub fn way_ids(&self) -> &'a [i64] {
+        self.way_ids
+    }
+
+    /// OSM id of way `w`.
+    pub fn way_id(&self, w: usize) -> i64 {
+        self.way_ids[w]
+    }
+
+    fn node_range(&self, w: usize) -> std::ops::Range<usize> {
+        let start = if w == 0 { 0 } else { self.node_ends[w - 1] as usize };
+        start..self.node_ends[w] as usize
+    }
+
+    /// Longitudes of way `w`'s nodes, in way order.
+    pub fn lons(&self, w: usize) -> &'a [f64] {
+        &self.lons[self.node_range(w)]
+    }
+
+    /// Latitudes of way `w`'s nodes, in way order.
+    pub fn lats(&self, w: usize) -> &'a [f64] {
+        &self.lats[self.node_range(w)]
+    }
+
+    /// Number of nodes of way `w`.
+    pub fn node_count(&self, w: usize) -> usize {
+        self.node_range(w).len()
+    }
+
+    /// Nodes across all ways.
+    pub fn total_nodes(&self) -> usize {
+        self.lons.len()
+    }
+
+    /// Value of requested key `key` (index into the query's `keys`) on way
+    /// `w`. Same answer as [`Feature::tag`] for that key on the same way:
+    /// `Some` whenever the way carries the key — including values such as
+    /// `"no"`, `"0"` and `""` — and `None` only when it does not.
+    pub fn tag(&self, w: usize, key: usize) -> Option<&'a str> {
+        assert!(key < self.key_count, "key index {key} out of range");
+        let i = w * self.key_count + key;
+        if self.tag_present[i] == 0 {
+            return None;
+        }
+        let start = if i == 0 { 0 } else { self.tag_ends[i - 1] as usize };
+        // Validated as UTF-8 when the result was built.
+        std::str::from_utf8(&self.tag_bytes[start..self.tag_ends[i] as usize]).ok()
+    }
+}
+
 /// Main interface to GeoDESK GOL files
+///
+/// `GeoDesk` is `Send + Sync`: one opened store can be queried from several
+/// threads at once (libgeodesk is built with `GEODESK_MULTITHREADED`), so
+/// parallel readers share its tile mapping and thread pool instead of each
+/// opening the file again.
 pub struct GeoDesk {
     store: UniquePtr<ffi::bridge::FeatureStore>,
 }
@@ -359,6 +539,61 @@ impl GeoDesk {
         Ok(QueryResult::new(result))
     }
 
+    /// Query ways with GOQL and return them in compact form: way id, node
+    /// coordinates, and the values of `keys` only (see [`CompactWays`]).
+    ///
+    /// Non-way features matched by the query are skipped. Tag values are
+    /// read from the way's tag table exactly as [`GeoDesk::query`] reads them,
+    /// so `view().tag(w, k)` equals `Feature::tag(keys[k])` for the same way.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use geodesk_rs::{GeoDesk, BoundingBox};
+    ///
+    /// let geodesk = GeoDesk::open("world.gol").unwrap();
+    /// let bbox = BoundingBox::new(12.45, 55.61, 12.65, 55.73); // Copenhagen
+    /// let ways = geodesk
+    ///     .query_ways_compact("w[highway]", bbox, &["highway", "oneway"])
+    ///     .unwrap();
+    /// let v = ways.view();
+    /// for w in 0..v.len() {
+    ///     let _ = (v.way_id(w), v.lons(w), v.lats(w), v.tag(w, 1));
+    /// }
+    /// ```
+    pub fn query_ways_compact(
+        &self,
+        goql_query: &str,
+        bbox: BoundingBox,
+        keys: &[&str],
+    ) -> Result<CompactWays, Box<dyn std::error::Error>> {
+        let inner = ffi::bridge::query_ways_compact(
+            &self.store,
+            goql_query,
+            bbox.west,
+            bbox.south,
+            bbox.east,
+            bbox.north,
+            keys,
+        )?;
+        let ways = CompactWays {
+            inner,
+            key_count: keys.len(),
+        };
+        // `Feature` tags come through `rust::String`, which rejects invalid
+        // UTF-8 (the whole query fails); hold the compact form to the same
+        // rule so `CompactWaysView::tag` can hand out `&str`.
+        {
+            let v = ways.view();
+            let mut start = 0usize;
+            for &end in v.tag_ends {
+                std::str::from_utf8(&v.tag_bytes[start..end as usize])
+                    .map_err(|e| format!("tag value is not UTF-8: {e}"))?;
+                start = end as usize;
+            }
+        }
+        Ok(ways)
+    }
+
     /// Query all amenities within a bounding box (any type)
     pub fn query_all_amenities(
         &self,
@@ -416,6 +651,14 @@ mod tests {
         assert_eq!(bbox.south, 45.4);
         assert_eq!(bbox.east, -73.5);
         assert_eq!(bbox.north, 45.7);
+    }
+
+    #[test]
+    fn store_and_compact_results_are_thread_safe() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<GeoDesk>();
+        send_sync::<CompactWays>();
+        send_sync::<CompactWaysView<'static>>();
     }
 
     #[test]

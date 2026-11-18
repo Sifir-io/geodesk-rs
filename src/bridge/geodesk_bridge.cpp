@@ -5,8 +5,18 @@
 #include <geodesk/geom/Coordinate.h>
 #include <geodesk/geom/polygon/Polygonizer.h>
 #include "geom/polygon/RingCoordinateIterator.h" // internal header (src/ on include path)
+#include <algorithm>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
+
+// lib.rs declares FeatureStore Send + Sync. That is only sound when
+// libgeodesk's shared objects (store, matchers) use atomic reference counts,
+// i.e. when the library *and* this bridge are compiled with
+// GEODESK_MULTITHREADED (set in CMakeLists.txt and build.rs).
+#ifndef GEODESK_MULTITHREADED
+#error "geodesk_bridge must be built with GEODESK_MULTITHREADED"
+#endif
 
 using namespace geodesk;
 
@@ -148,6 +158,95 @@ FeatureStore::query(const std::string &goql_query,
   return result;
 }
 
+// The flat arrays index with uint32_t; refuse a result that would overflow
+// them rather than wrap silently.
+static uint32_t checked_u32(size_t v) {
+  if (v > UINT32_MAX) {
+    throw std::length_error("compact way result exceeds 2^32 entries");
+  }
+  return static_cast<uint32_t>(v);
+}
+
+std::unique_ptr<CompactWays>
+FeatureStore::query_ways_compact(const std::string &goql_query,
+                                 const BoundingBox &bbox,
+                                 const std::vector<std::string> &keys) const {
+  auto out = std::make_unique<CompactWays>();
+  const size_t key_count = keys.size();
+  // Values of the current way, per requested key (first occurrence wins).
+  std::vector<std::string> values(key_count);
+  std::vector<bool> found(key_count);
+
+  try {
+    Box box = Box::ofWSEN(bbox.west, bbox.south, bbox.east, bbox.north);
+    Features filtered = pImpl->features(goql_query.c_str())(box);
+
+    for (Feature feature : filtered) {
+      if (!feature.isWay()) {
+        continue;
+      }
+      out->way_ids_.push_back(feature.id());
+
+      // Walk the tag table exactly as query() does and keep the requested
+      // keys. Not `feature[key]`: a missing key and an empty value both read
+      // as "", and TagValue's bool conversion is false for "no" and 0.
+      std::fill(found.begin(), found.end(), false);
+      Tags tags = feature.tags();
+      for (Tag tag : tags) {
+        std::string_view key = tag.key();
+        for (size_t k = 0; k < key_count; k++) {
+          if (!found[k] && key == keys[k]) {
+            found[k] = true;
+            values[k] = std::string(tag.value());
+            break;
+          }
+        }
+      }
+      for (size_t k = 0; k < key_count; k++) {
+        if (found[k]) {
+          out->tag_bytes_.insert(out->tag_bytes_.end(), values[k].begin(),
+                                 values[k].end());
+        }
+        out->tag_present_.push_back(found[k] ? 1 : 0);
+        out->tag_ends_.push_back(checked_u32(out->tag_bytes_.size()));
+      }
+
+      Nodes nodes = feature.nodes();
+      for (Node node : nodes) {
+        out->lons_.push_back(node.lon());
+        out->lats_.push_back(node.lat());
+      }
+      out->node_ends_.push_back(checked_u32(out->lons_.size()));
+    }
+  } catch (const std::exception &e) {
+    throw std::runtime_error(std::string("Query failed: ") + e.what());
+  }
+
+  return out;
+}
+
+rust::Slice<const int64_t> CompactWays::way_ids() const {
+  return {way_ids_.data(), way_ids_.size()};
+}
+rust::Slice<const uint32_t> CompactWays::node_ends() const {
+  return {node_ends_.data(), node_ends_.size()};
+}
+rust::Slice<const double> CompactWays::lons() const {
+  return {lons_.data(), lons_.size()};
+}
+rust::Slice<const double> CompactWays::lats() const {
+  return {lats_.data(), lats_.size()};
+}
+rust::Slice<const uint8_t> CompactWays::tag_bytes() const {
+  return {tag_bytes_.data(), tag_bytes_.size()};
+}
+rust::Slice<const uint32_t> CompactWays::tag_ends() const {
+  return {tag_ends_.data(), tag_ends_.size()};
+}
+rust::Slice<const uint8_t> CompactWays::tag_present() const {
+  return {tag_present_.data(), tag_present_.size()};
+}
+
 // FeatureResult implementation
 FeatureResult::FeatureResult() = default;
 FeatureResult::~FeatureResult() = default;
@@ -185,6 +284,19 @@ std::unique_ptr<FeatureResult> query_with_goql(const FeatureStore &store,
                                                double east, double north) {
   BoundingBox bbox{west, south, east, north};
   return store.query(std::string(goql_query), bbox);
+}
+
+std::unique_ptr<CompactWays>
+query_ways_compact(const FeatureStore &store, rust::Str goql_query,
+                   double west, double south, double east, double north,
+                   rust::Slice<const rust::Str> keys) {
+  std::vector<std::string> key_strings;
+  key_strings.reserve(keys.size());
+  for (const rust::Str &k : keys) {
+    key_strings.emplace_back(k.data(), k.size());
+  }
+  BoundingBox bbox{west, south, east, north};
+  return store.query_ways_compact(std::string(goql_query), bbox, key_strings);
 }
 
 size_t result_count(const FeatureResult &result) { return result.count(); }
